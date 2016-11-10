@@ -7,27 +7,45 @@ import numpy
 import os
 from sklearn import svm
 
-def read_pgm(path, filename, byteorder='>'):
+
+def read_pgm(path, filename, nbits=16, byteorder='>'):
     """Return image data from a raw PGM file as numpy array.
 
     Format specification: http://netpbm.sourceforge.net/doc/pgm.html
 
     """
-    with open(path + filename, 'rb') as f:
-        buffer = f.read()
-    try:
-        header, width, height, maxval = re.search(
-            b"(^P5\s(?:\s*#.*[\r\n])*"
-            b"(\d+)\s(?:\s*#.*[\r\n])*"
-            b"(\d+)\s(?:\s*#.*[\r\n])*"
-            b"(\d+)\s(?:\s*#.*[\r\n]\s)*)", buffer).groups()
-    except AttributeError:
-        raise ValueError("Not a raw PGM file: '%s'" % filename)
-    return numpy.frombuffer(buffer,
+    if nbits == 16:
+        with open(path + filename, 'rb') as f:
+            buffer = f.read()
+        try:
+            header, width, height, maxval = re.search(
+                b"(^P5\s(?:\s*#.*[\r\n])*"
+                b"(\d+)\s(?:\s*#.*[\r\n])*"
+                b"(\d+)\s(?:\s*#.*[\r\n])*"
+                b"(\d+)\s(?:\s*#.*[\r\n]\s)*)", buffer).groups()
+        except AttributeError:
+            raise ValueError("Not a raw PGM file: '%s'" % filename)
+        return numpy.frombuffer(buffer,
                             dtype='u1' if int(maxval) < 256 else byteorder+'u2',
                             count=int(width)*int(height),
                             offset=len(header)
                             ).reshape((int(height), int(width)))
+    else:
+        if nbits == 8:
+            with open(path + filename, 'rb') as pgmf:
+                """Return a raster of integers from a PGM as a list of lists."""
+                assert pgmf.readline() == 'P2\n'
+                (width, height) = [int(i) for i in pgmf.readline().split()]
+                depth = int(pgmf.readline())
+                assert depth <= 255
+
+                raster = []
+                for y in range(height):
+                    row = []
+                    for x in range(width):
+                        row.append(ord(pgmf.read(1)))
+                    raster.append(row)
+                return np.asarray(raster).reshape((height, width))
 
 
 def read_image_folder(folderpath='.'):
@@ -42,13 +60,14 @@ def read_image_folder(folderpath='.'):
     for file in listing:
         name, extension = os.path.splitext(file)
         if extension == '.pgm':
-            im = read_pgm(folderpath, file)
+            im = read_pgm(folderpath, file, 8)
+
             im_vector = np.reshape(im, (1, im.shape[0] * im.shape[1]))
             images.append(im_vector)
             if subname in name:
                 label_sunglasses.append(1)
             else:
-                label_sunglasses.append(0)
+                label_sunglasses.append(-1)
             if num_images == 0:
                 h = im.shape[0]
                 w = im.shape[1]
@@ -81,9 +100,10 @@ def PCA_down_dim(images, n_PCA_components=20):
     eigenvectors = np.asarray(eigenvectors)
     #plt.show()
 
-    features = images.dot(eigenvectors.T)
+    features = images_centered.dot(eigenvectors.T)
 
     return mean_face, features
+
 
 if __name__ == "__main__":
 
@@ -91,7 +111,7 @@ if __name__ == "__main__":
     images, n, height, width, labels = read_image_folder('./FACES/')
     print("Dataset consists of %d faces" % n)
 
-    mean_face, features = PCA_down_dim(images, 10)
+    mean_face, features = PCA_down_dim(images, 40)
     #plt. figure(1)
     #plt.imshow(mean_face.reshape((height, width)), plt.cm.gray)
 
@@ -102,7 +122,7 @@ if __name__ == "__main__":
     clf.fit(features, labels)
     print('predicting...')
     pred_by_efs = clf.predict(features)
-    print(pred_by_efs)
+    #print(pred_by_efs)
     loss = np.sum( np.abs( np.subtract(pred_by_efs, labels) ) ) / float(n)
     print('0/1 loss of EFS feature predicting is: %f' % loss)
 
@@ -110,7 +130,7 @@ if __name__ == "__main__":
     clf.fit(images, labels)
     print('predicting...')
     pred_by_pxl = clf.predict(images)
-    print(pred_by_efs)
+    #print(pred_by_efs)
     loss = np.sum(np.subtract(pred_by_pxl, labels)) / float(n)
     print('0/1 loss of PXL feature predicting is: %f' % loss)
 
