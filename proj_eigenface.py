@@ -1,51 +1,44 @@
-import scipy.io
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
-import re
-import numpy
+
 import os
 from sklearn import svm
+import time
 
 
-def read_pgm(path, filename, nbits=16, byteorder='>'):
+def read_pgm(path, filename, byteorder='>'):
     """Return image data from a raw PGM file as numpy array.
 
     Format specification: http://netpbm.sourceforge.net/doc/pgm.html
 
     """
-    if nbits == 16:
-        with open(path + filename, 'rb') as f:
-            buffer = f.read()
-        try:
-            header, width, height, maxval = re.search(
-                b"(^P5\s(?:\s*#.*[\r\n])*"
-                b"(\d+)\s(?:\s*#.*[\r\n])*"
-                b"(\d+)\s(?:\s*#.*[\r\n])*"
-                b"(\d+)\s(?:\s*#.*[\r\n]\s)*)", buffer).groups()
-        except AttributeError:
-            raise ValueError("Not a raw PGM file: '%s'" % filename)
-        return numpy.frombuffer(buffer,
-                            dtype='u1' if int(maxval) < 256 else byteorder+'u2',
-                            count=int(width)*int(height),
-                            offset=len(header)
-                            ).reshape((int(height), int(width)))
-    else:
-        if nbits == 8:
-            with open(path + filename, 'rb') as pgmf:
-                """Return a raster of integers from a PGM as a list of lists."""
-                assert pgmf.readline() == 'P2\n'
-                (width, height) = [int(i) for i in pgmf.readline().split()]
-                depth = int(pgmf.readline())
-                assert depth <= 255
+    with open(path + filename, 'rb') as pgmf:
+        pgm_type = pgmf.readline()
+        (width, height) = [int(i) for i in pgmf.readline().split()]
+        maxval = int(pgmf.readline())
+        assert maxval <= 255
+        raster = []
 
-                raster = []
+        if pgm_type == 'P2\n':   # plain pgm
+            line = pgmf.readline()
+            while line:
+                line = line.split()
+                for x in line:
+                    raster.append(int(x))
+                line = pgmf.readline()
+
+        else:
+            if pgm_type == 'P5\n':
                 for y in range(height):
                     row = []
                     for x in range(width):
                         row.append(ord(pgmf.read(1)))
                     raster.append(row)
-                return np.asarray(raster).reshape((height, width))
+
+        raster = np.asarray(raster).reshape((height, width))
+        #plt.imshow(raster, plt.cm.gray)
+        return raster
 
 
 def read_image_folder(folderpath='.'):
@@ -60,14 +53,14 @@ def read_image_folder(folderpath='.'):
     for file in listing:
         name, extension = os.path.splitext(file)
         if extension == '.pgm':
-            im = read_pgm(folderpath, file, 8)
+            im = read_pgm(folderpath, file)
 
             im_vector = np.reshape(im, (1, im.shape[0] * im.shape[1]))
             images.append(im_vector)
             if subname in name:
                 label_sunglasses.append(1)
             else:
-                label_sunglasses.append(-1)
+                label_sunglasses.append(0)
             if num_images == 0:
                 h = im.shape[0]
                 w = im.shape[1]
@@ -90,49 +83,73 @@ def PCA_down_dim(images, n_PCA_components=20):
     pca = PCA(n_PCA_components)
     pca.fit(images_centered)
 
-    #i = 2
-    eigenvectors = []
+    i = 2
     for eigenvector in pca.components_:
-        eigenvectors.append(eigenvector)
         #plt.figure(i)
-        #plt.imshow((eigenvector + mean_face).reshape((height, width)), plt.cm.gray)
-        #i += 1
-    eigenvectors = np.asarray(eigenvectors)
+        #plt.imshow(eigenvector.reshape((height, width)), plt.cm.gray)
+        i += 1
     #plt.show()
 
-    features = images_centered.dot(eigenvectors.T)
+    features = images_centered.dot(pca.components_.T)
 
-    return mean_face, features
+    return mean_face, features, pca.components_
 
 
 if __name__ == "__main__":
-
+    start = time.time() * 1000
     #images, n, height, width, labels = read_image_folder('/Users/ANNIE/DOWNLOADS/faces_4/an2i/')
     images, n, height, width, labels = read_image_folder('./FACES/')
+    #images, n, height, width, labels = read_image_folder('./FACES_M/')
     print("Dataset consists of %d faces" % n)
+    print('Loading images time: %f' % (time.time() * 1000 - start))
 
-    mean_face, features = PCA_down_dim(images, 40)
-    #plt. figure(1)
-    #plt.imshow(mean_face.reshape((height, width)), plt.cm.gray)
+    efs_perfm = []
+    axis = []
+    for n_efs in range(4, 52):
+        mean_face, features, eigenvectors = PCA_down_dim(images, n_efs)
+        # plt. figure(1)
+        # plt.imshow(mean_face.reshape((height, width)), plt.cm.gray)
 
-    clf = svm.SVC(kernel='linear', C=1.0)
+        clf = svm.SVC(kernel='linear', C=1.0)
 
+        #print('learning EFS features...')
+        clf.fit(features, labels)
+        #print('predicting...')
+        pred_by_efs = clf.predict(features)
+        # print(pred_by_efs)
+        loss = np.sum(np.abs(np.subtract(pred_by_efs, labels))) / float(n)
+        #print('0/1 loss of EFS feature predicting is: %f' % loss)
 
-    print('learning EFS features...')
-    clf.fit(features, labels)
-    print('predicting...')
-    pred_by_efs = clf.predict(features)
-    #print(pred_by_efs)
-    loss = np.sum( np.abs( np.subtract(pred_by_efs, labels) ) ) / float(n)
-    print('0/1 loss of EFS feature predicting is: %f' % loss)
+        images_test, n_test, height_test, width_test, labels_test = read_image_folder('./VALIDATION/')
+        #print("Test Dataset consists of %d faces" % n_test)
+        #print('On validation set...')
+        mean_face_test = np.mean(images_test, axis=0)
+        images_centered_test = images_test - mean_face_test
+        features_test = images_centered_test.dot(eigenvectors.T)
+        #print('predicting...')
+        pred_by_efs_test = clf.predict(features_test)
+        # print(pred_by_efs)
+        loss = np.sum(np.abs(np.subtract(pred_by_efs_test, labels_test))) / float(n_test)
+        #print('0/1 loss of EFS feature predicting is: %f' % loss)
+        efs_perfm.append(loss)
+        axis.append(n_efs)
 
     print('learning PXL features...')
     clf.fit(images, labels)
     print('predicting...')
     pred_by_pxl = clf.predict(images)
-    #print(pred_by_efs)
-    loss = np.sum(np.subtract(pred_by_pxl, labels)) / float(n)
+    # print(pred_by_efs)
+    loss = np.sum(np.abs(np.subtract(pred_by_pxl, labels))) / float(n)
     print('0/1 loss of PXL feature predicting is: %f' % loss)
 
+    print('predicting on validation set...')
+    pred_by_pxl_test = clf.predict(images_test)
+    # print(pred_by_efs)
+    loss = np.sum(np.abs(np.subtract(pred_by_pxl_test, labels_test))) / float(n_test)
+    print('0/1 loss of PXL feature predicting is: %f' % loss)
 
-
+    plt.figure(2)
+    plt.plot(axis, efs_perfm)
+    plt.xlabel('number of eigenfaces')
+    plt.ylabel('prediction 0/1 loss on validation set')
+    plt.show()
